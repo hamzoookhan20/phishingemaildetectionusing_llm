@@ -1,50 +1,60 @@
+import os
+
+# --- THE FIX: FORCE CPU GLOBALLY ---
+# These must stay at the VERY top of your file, before any other imports
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+import torch
+# Manually overriding the default loading behavior
+torch.set_default_device('cpu')
+
 import streamlit as st
 import joblib
-import torch
-import os
 import io
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Phishing Detection", page_icon="🛡️")
 
-# --- ADVANCED CPU LOADING STRATEGY ---
 @st.cache_resource
 def load_model_safely():
     model_path = "spam_model.pkl"
     
     if not os.path.exists(model_path):
-        st.error(f"❌ '{model_path}' not found. Please check GitHub LFS.")
+        st.error(f"❌ Model file not found. Ensure LFS is synced.")
         return None
 
     try:
-        # Strategy A: Use torch.load with explicit CPU mapping
-        # This is the most reliable way to bypass the CUDA error
-        with open(model_path, 'rb') as f:
-            return torch.load(f, map_location=torch.device('cpu'), weights_only=False)
+        # Strategy: Use torch.load with map_location AND weights_only=False
+        # This handles the complex objects often found in .pkl files
+        model = torch.load(
+            model_path, 
+            map_location=torch.device('cpu'), 
+            weights_only=False
+        )
+        return model
     except Exception as e:
+        st.sidebar.info("Standard torch.load failed, trying joblib fallback...")
         try:
-            # Strategy B: If Strategy A fails, try joblib with a context manager
-            # Some sklearn pipelines need this
+            # Fallback for pure Sklearn wrappers
             return joblib.load(model_path)
         except Exception as final_e:
-            st.error(f"❌ All loading attempts failed.")
-            st.code(f"Technical Details: {str(final_e)}")
+            st.error("❌ Critical: All loading attempts failed.")
+            st.code(f"Final Error: {str(final_e)}")
             return None
 
 # Load the model
 model = load_model_safely()
 
-# --- UI ---
+# --- APP UI ---
 st.title("🛡️ Phishing Email Detection")
-st.write("Enter text below to analyze for spam or phishing indicators.")
+st.write("Force-loading model to CPU environment...")
 
-user_input = st.text_area("Email Content", height=200)
+user_input = st.text_area("Paste Email Content here:", height=200)
 
-if st.button("Analyze", type="primary"):
-    if user_input.strip():
-        if model:
+if st.button("Analyze Now", type="primary"):
+    if user_input.strip() and model:
+        with st.spinner("Analyzing..."):
             try:
-                # Note: Most models expect a list of strings
+                # Prediction logic
                 prediction = model.predict([user_input])[0]
                 
                 st.divider()
@@ -52,21 +62,9 @@ if st.button("Analyze", type="primary"):
                     st.error("### ⚠️ Result: Phishing/Spam Detected")
                 else:
                     st.success("### ✅ Result: Safe Message")
-                
-                # Show probability if available
-                if hasattr(model, "predict_proba"):
-                    prob = model.predict_proba([user_input]).max()
-                    st.info(f"**Confidence:** {prob:.2%}")
-                    
             except Exception as e:
                 st.error(f"Prediction error: {e}")
-        else:
-            st.error("Model is not loaded.")
+    elif not model:
+        st.error("Model is not loaded. Check technical details above.")
     else:
-        st.warning("Please enter a message.")
-
-# Footer Debugger (Optional)
-if not os.path.exists("spam_model.pkl"):
-    st.sidebar.warning("Model file missing from root directory.")
-else:
-    st.sidebar.success("Model file detected in root directory.")
+        st.warning("Please enter some text.")
