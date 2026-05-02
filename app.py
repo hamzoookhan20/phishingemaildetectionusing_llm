@@ -2,6 +2,7 @@ import streamlit as st
 import joblib
 import torch
 import os
+import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -10,33 +11,30 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- MODEL LOADING LOGIC ---
+# --- FIXED MODEL LOADING LOGIC ---
 @st.cache_resource
 def load_model():
     """
-    Loads the 268MB model file. 
-    Handles the GPU-to-CPU mapping automatically.
+    Forces the model to load on CPU regardless of how it was saved.
     """
     model_filename = "spam_model.pkl"
     
-    # Verify file existence
     if not os.path.exists(model_filename):
-        # This helpfully lists files for you in the UI if it fails
-        available_files = os.listdir(".")
-        st.error(f"❌ File '{model_filename}' not found.")
-        st.info(f"Files currently in directory: {available_files}")
+        st.error(f"❌ File '{model_filename}' not found in repository.")
         return None
 
     try:
-        # Attempt standard load
-        return joblib.load(model_filename)
-    except Exception:
+        # Since the error is explicitly about CUDA, we use torch.load directly.
+        # torch.load can open most .pkl files that contain torch tensors.
+        with open(model_filename, 'rb') as f:
+            # The 'map_location' parameter is the fix for your specific error.
+            return torch.load(f, map_location=torch.device('cpu'), weights_only=False)
+    except Exception as e:
         try:
-            # Fallback: Load GPU-trained model onto CPU
-            with open(model_filename, 'rb') as f:
-                return torch.load(f, map_location=torch.device('cpu'), weights_only=False)
-        except Exception as e:
-            st.error(f"❌ Error loading model: {e}")
+            # Secondary fallback: If it's a pure Scikit-Learn model wrapped in joblib
+            return joblib.load(model_filename)
+        except Exception as e2:
+            st.error(f"❌ Final attempt failed. Original Error: {e}")
             return None
 
 # Initialize the model
@@ -46,7 +44,7 @@ model = load_model()
 st.title("🛡️ Phishing Email Detector")
 st.markdown("""
 Paste the content of a suspicious email or message below. 
-Our AI will analyze the text for patterns common in phishing and spam.
+The AI will force-load the model onto the CPU for analysis.
 """)
 
 # Input Area
@@ -57,24 +55,24 @@ if st.button("Run Analysis", type="primary"):
     if not message_text.strip():
         st.warning("Please enter some text to analyze.")
     elif model is None:
-        st.error("The model is not loaded. Check your file name and GitHub LFS status.")
+        st.error("Model load failed. Check the error message above.")
     else:
-        with st.spinner("Analyzing text patterns..."):
+        with st.spinner("Analyzing text patterns on CPU..."):
             try:
-                # Wrap input in a list as most sklearn/NLP models expect
+                # Prediction logic
+                # If your model is a pipeline/Transformer, it expects a list
                 prediction = model.predict([message_text])[0]
                 
                 st.divider()
                 
-                # Result Logic (Assumes 1 = Spam/Phishing, 0 = Safe)
                 if prediction == 1:
                     st.error("### ⚠️ High Risk Detected")
-                    st.write("This message matches known phishing or spam signatures.")
+                    st.write("This message matches known phishing signatures.")
                 else:
                     st.success("### ✅ Appears Safe")
-                    st.write("The AI did not find significant phishing indicators in this message.")
+                    st.write("No significant phishing indicators found.")
                 
-                # Display probability if the model supports it
+                # Confidence display
                 if hasattr(model, "predict_proba"):
                     probs = model.predict_proba([message_text])[0]
                     confidence = max(probs)
@@ -86,4 +84,4 @@ if st.button("Run Analysis", type="primary"):
 
 # --- FOOTER ---
 st.divider()
-st.caption("Built with Streamlit • Model: 268MB DistilBERT/Sklearn Hybrid")
+st.caption("Built with Streamlit • CPU-compatible Mode")
