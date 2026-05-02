@@ -1,62 +1,75 @@
 import os
+import io
 import torch
 import streamlit as st
 import joblib
 
-# --- 1. FORCE CPU AT THE START ---
+# --- STEP 1: GLOBAL ENVIRONMENT OVERRIDE ---
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-st.set_page_config(page_title="Phishing Detection", page_icon="🛡️")
+# --- STEP 2: THE "HEAVY DUTY" CPU UNPICKLER ---
+# This class redefines how 'torch' objects are rebuilt from the file
+class CPU_Unpickler(io.BytesIO):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        return super().find_class(module, name)
 
-# --- 2. DEBUGGING SIDEBAR ---
-st.sidebar.title("System Diagnostics")
-all_files = os.listdir(".")
-st.sidebar.write("Files detected:", all_files)
-
-# --- 3. MODEL LOADING LOGIC ---
 @st.cache_resource
-def load_phishing_model():
+def load_model_final():
     model_path = "spam_model.pkl"
     
-    if not os.path.exists(model_path):
-        return None
-
-    # Handle the CUDA-to-CPU error automatically
     try:
+        # Strategy A: Try the most direct torch load
         return torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
     except Exception:
         try:
-            return joblib.load(model_path)
+            # Strategy B: Manual byte-stream redirection
+            with open(model_path, 'rb') as f:
+                return torch.load(f, map_location='cpu')
         except Exception as e:
-            st.sidebar.error(f"Load Error: {e}")
-            return None
+            # Strategy C: Joblib load (for Sklearn wrappers)
+            try:
+                return joblib.load(model_path)
+            except Exception as final_e:
+                st.error(f"Critical loading failure: {final_e}")
+                return None
 
-model = load_phishing_model()
+# --- STEP 3: USER INTERFACE ---
+st.set_page_config(page_title="Phishing Detection AI", page_icon="🛡️")
 
-# --- 4. USER INTERFACE ---
 st.title("🛡️ Phishing Email Detector")
+st.caption("Status: Model detected. Forcing CPU execution...")
 
-if model is None:
-    st.error("❌ Model file ('spam_model.pkl') not found in the repository.")
-    st.info("Check if Git LFS successfully uploaded the 268MB file to GitHub.")
-else:
-    st.success("✅ Model loaded successfully on CPU.")
+model = load_model_final()
+
+if model is not None:
+    st.success("✅ Model successfully mapped to CPU.")
     
-    user_input = st.text_area("Paste the email content to analyze:", height=200)
+    user_input = st.text_area("Paste message content:", height=200, placeholder="Enter text here...")
     
     if st.button("Analyze Message", type="primary"):
         if user_input.strip():
-            with st.spinner("Analyzing..."):
+            with st.spinner("Processing..."):
                 try:
-                    # Most models expect a list of strings
+                    # NLP models usually require input as a list: [text]
                     prediction = model.predict([user_input])[0]
                     
                     st.divider()
                     if prediction == 1:
-                        st.error("### ⚠️ Result: Phishing/Spam")
+                        st.error("### ⚠️ Result: Phishing/Spam Detected")
+                        st.warning("This message contains high-risk patterns.")
                     else:
-                        st.success("### ✅ Result: Safe")
+                        st.success("### ✅ Result: Message Appears Safe")
                 except Exception as e:
-                    st.error(f"Analysis failed: {e}")
+                    st.error(f"Prediction Error: {e}")
         else:
-            st.warning("Please enter some text.")
+            st.warning("Please enter some text first.")
+else:
+    st.error("Model mapping failed. Please check the logs.")
+
+# --- SIDEBAR DIAGNOSTICS ---
+with st.sidebar:
+    st.write("### System Info")
+    st.write(f"CUDA Available: {torch.cuda.is_available()}")
+    st.write(f"Model Size: {os.path.getsize('spam_model.pkl') / (1024*1024):.2f} MB")
