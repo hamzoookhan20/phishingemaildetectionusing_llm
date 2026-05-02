@@ -3,87 +3,87 @@ import joblib
 import torch
 import os
 
-# 1. Page Configuration
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Phishing & Spam Detection",
-    page_icon="📧",
+    page_title="Phishing Detection AI",
+    page_icon="🛡️",
     layout="centered"
 )
 
-# 2. Optimized Model Loading Function
+# --- MODEL LOADING LOGIC ---
 @st.cache_resource
-def load_phishing_model():
-    model_path = "spam_model.pkl"
+def load_model():
+    """
+    Loads the 268MB model file. 
+    Handles the GPU-to-CPU mapping automatically.
+    """
+    model_filename = "spam_model.pkl"
     
-    if not os.path.exists(model_path):
-        st.error(f"Critical Error: '{model_path}' not found in the repository.")
+    # Verify file existence
+    if not os.path.exists(model_filename):
+        # This helpfully lists files for you in the UI if it fails
+        available_files = os.listdir(".")
+        st.error(f"❌ File '{model_filename}' not found.")
+        st.info(f"Files currently in directory: {available_files}")
         return None
 
     try:
-        # Step 1: Attempt standard load
-        # This works if the pickle was saved with joblib and is CPU-compatible
-        model = joblib.load(model_path)
-        return model
-    except Exception as e:
-        # Step 2: Fallback for GPU-trained models (The CPU Mapping Fix)
-        # If the pickle contains PyTorch tensors trained on CUDA, we force them to CPU
+        # Attempt standard load
+        return joblib.load(model_filename)
+    except Exception:
         try:
-            with open(model_path, 'rb') as f:
-                # Weights_only=False is used because .pkl files often contain custom classes
+            # Fallback: Load GPU-trained model onto CPU
+            with open(model_filename, 'rb') as f:
                 return torch.load(f, map_location=torch.device('cpu'), weights_only=False)
-        except Exception as final_error:
-            st.error(f"Failed to load model: {str(final_error)}")
+        except Exception as e:
+            st.error(f"❌ Error loading model: {e}")
             return None
 
-# Initialize Model
-model = load_phishing_model()
+# Initialize the model
+model = load_model()
 
-# 3. Streamlit User Interface
-st.title("📧 Phishing Email Detection")
+# --- USER INTERFACE ---
+st.title("🛡️ Phishing Email Detector")
 st.markdown("""
-    This application uses a trained model to analyze messages for potential security threats. 
-    **Paste the content of an email or SMS below to check its safety.**
+Paste the content of a suspicious email or message below. 
+Our AI will analyze the text for patterns common in phishing and spam.
 """)
 
 # Input Area
-user_input = st.text_area("Message Content", placeholder="Enter the email text here...", height=250)
+message_text = st.text_area("Message Content", placeholder="Paste email text here...", height=200)
 
-# 4. Prediction Logic
-if st.button("Analyze Message", type="primary"):
-    if user_input.strip():
-        if model is not None:
-            with st.spinner("Processing large model file..."):
-                try:
-                    # Most Scikit-learn/NLP pipelines expect a list of strings
-                    # We wrap user_input in [ ] to match the expected input shape
-                    prediction = model.predict([user_input])[0]
-                    
-                    # Optional: Handling probability if your model supports predict_proba
-                    confidence = None
-                    if hasattr(model, "predict_proba"):
-                        proba = model.predict_proba([user_input])
-                        confidence = proba.max()
-
-                    st.divider()
-                    
-                    # Displaying results based on common label logic (1=Spam, 0=Safe)
-                    if prediction == 1:
-                        st.error("### ⚠️ Potential Phishing or Spam Detected")
-                        if confidence:
-                            st.metric("Confidence Level", f"{confidence:.2%}")
-                        st.warning("Exercise caution: This message contains patterns common in phishing attacks.")
-                    else:
-                        st.success("### ✅ This Message Appears to be Safe")
-                        if confidence:
-                            st.metric("Confidence Level", f"{confidence:.2%}")
-                        st.info("The model did not find high-risk phishing indicators in this text.")
-                
-                except Exception as eval_error:
-                    st.error(f"Prediction Error: {str(eval_error)}")
-        else:
-            st.error("Model is not available. Please check the logs.")
+# Prediction Action
+if st.button("Run Analysis", type="primary"):
+    if not message_text.strip():
+        st.warning("Please enter some text to analyze.")
+    elif model is None:
+        st.error("The model is not loaded. Check your file name and GitHub LFS status.")
     else:
-        st.warning("Please provide a message to analyze.")
+        with st.spinner("Analyzing text patterns..."):
+            try:
+                # Wrap input in a list as most sklearn/NLP models expect
+                prediction = model.predict([message_text])[0]
+                
+                st.divider()
+                
+                # Result Logic (Assumes 1 = Spam/Phishing, 0 = Safe)
+                if prediction == 1:
+                    st.error("### ⚠️ High Risk Detected")
+                    st.write("This message matches known phishing or spam signatures.")
+                else:
+                    st.success("### ✅ Appears Safe")
+                    st.write("The AI did not find significant phishing indicators in this message.")
+                
+                # Display probability if the model supports it
+                if hasattr(model, "predict_proba"):
+                    probs = model.predict_proba([message_text])[0]
+                    confidence = max(probs)
+                    st.progress(float(confidence))
+                    st.caption(f"Model Confidence: {confidence:.2%}")
 
-# Footer
-st.caption("Note: This is an AI-powered tool. Always verify suspicious links manually.")
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+
+# --- FOOTER ---
+st.divider()
+st.caption("Built with Streamlit • Model: 268MB DistilBERT/Sklearn Hybrid")
